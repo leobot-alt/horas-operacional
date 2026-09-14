@@ -36,9 +36,12 @@
   </main>
 </div>
 <div id="modalRoot"></div><div id="noticeRoot"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase-config.js"></script>
 <script>
 (function(){
-'use strict';
+	'use strict';
+	const supabase=window.somenteSupabase||null;
 const months=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const profiles={psicologo:'Psicólogo',psiquiatria:'Psiquiatria',rqe:'Psiquiatria RQE'};
 const key='conecta-saude-html-v1';
@@ -58,9 +61,23 @@ function notify(text,error=false){const n=document.createElement('div');n.classN
 function roleLabel(r){return r==='admin'?'Administrador':r==='editor'?'Editor':'Visualizador'}
 function canEdit(){return currentUser&&['admin','editor'].includes(currentUser.role)}
 function addAudit(text){state.audit.unshift({id:id(),text,date:new Date().toLocaleString('pt-BR')});state.audit=state.audit.slice(0,100)}
-function login(user){currentUser=user;const viewer=user.role==='viewer';activeTab=viewer?'dashboard':'operations';$('#login').classList.add('hidden');$('#app').classList.remove('hidden');$('#userName').textContent=user.name;$('#userRole').textContent=roleLabel(user.role);$('#avatar').textContent=(user.name||'U').charAt(0).toUpperCase();$('#operationsTab').classList.toggle('hidden',viewer);$('#accessTab').classList.toggle('hidden',user.role!=='admin');render()}
-$('#loginForm').addEventListener('submit',e=>{e.preventDefault();const email=$('#loginEmail').value.trim().toLowerCase(),password=$('#loginPassword').value;const u=state.users.find(x=>x.email.toLowerCase()===email&&x.password===password);if(!u)return notify('E-mail ou senha inválidos.',true);login(u)});
-$('#logout').addEventListener('click',()=>{currentUser=null;activeTab='operations';$('#operationsTab').classList.remove('hidden');$('#accessTab').classList.remove('hidden');$('#app').classList.add('hidden');$('#login').classList.remove('hidden');$('#loginForm').reset()});
+	function login(user){currentUser=user;const viewer=user.role==='viewer';activeTab=viewer?'dashboard':'operations';$('#login').classList.add('hidden');$('#app').classList.remove('hidden');$('#userName').textContent=user.name;$('#userRole').textContent=roleLabel(user.role);$('#avatar').textContent=(user.name||'U').charAt(0).toUpperCase();$('#operationsTab').classList.toggle('hidden',viewer);$('#accessTab').classList.toggle('hidden',user.role!=='admin');render()}
+	function localLogin(email,password){return state.users.find(x=>String(x.email||'').toLowerCase()===email&&x.password===password)}
+	async function supabaseLogin(email,password){
+		if(!supabase)return null;
+		const {data,error}=await supabase.auth.signInWithPassword({email,password});
+		if(error)throw error;
+		const authUser=data.user;
+		let profile=null;
+		const result=await supabase.from('profiles').select('id,full_name,access_level').eq('id',authUser.id).maybeSingle();
+		if(result.error)console.warn('Não foi possível carregar o perfil:',result.error.message); else profile=result.data;
+		const user={id:authUser.id,name:profile?.full_name||authUser.user_metadata?.full_name||authUser.email?.split('@')[0]||'Usuário',email:authUser.email||email,password:'',role:['admin','editor','viewer'].includes(profile?.access_level)?profile.access_level:'viewer',authId:authUser.id};
+		const local=state.users.find(x=>String(x.email||'').toLowerCase()===email);
+		if(local){local.name=user.name;local.role=user.role;local.authId=authUser.id;stamp(local);save()}else{state.users.push({...user});save()}
+		return user;
+	}
+	$('#loginForm').addEventListener('submit',async e=>{e.preventDefault();const email=$('#loginEmail').value.trim().toLowerCase(),password=$('#loginPassword').value;const submit=e.target.querySelector('button[type=submit]');if(submit){submit.disabled=true;submit.textContent='Entrando...'}try{const remote=await supabaseLogin(email,password);if(remote){login(remote);return}const local=localLogin(email,password);if(local)login(local);else notify('E-mail ou senha inválidos. Verifique se o usuário está criado no Supabase Auth e se o perfil tem permissão.',true)}catch(error){console.warn('Login Supabase falhou:',error.message);const local=localLogin(email,password);if(local)login(local);else notify('E-mail ou senha inválidos. Verifique se o usuário está criado no Supabase Auth e se o perfil tem permissão.',true)}finally{if(submit){submit.disabled=false;submit.textContent='Entrar no sistema'}}});
+	$('#logout').addEventListener('click',async()=>{if(supabase)await supabase.auth.signOut().catch(()=>{});currentUser=null;activeTab='operations';$('#operationsTab').classList.remove('hidden');$('#accessTab').classList.remove('hidden');$('#app').classList.add('hidden');$('#login').classList.remove('hidden');$('#loginForm').reset()});
 document.querySelectorAll('[data-tab]').forEach(b=>b.type='button');document.addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(!b)return;e.preventDefault();activeTab=b.dataset.tab;document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===activeTab));render()});document.addEventListener('click',e=>{const op=e.target.closest('[data-edit-op]');if(op){e.preventDefault();operationModal(Number(op.dataset.editOp));return}const block=e.target.closest('[data-edit-block]');if(block){e.preventDefault();blockModal(Number(block.dataset.op),Number(block.dataset.editBlock));return}const user=e.target.closest('[data-edit-user]');if(user){e.preventDefault();userModal(Number(user.dataset.editUser));return}});document.addEventListener('click',e=>{const user=e.target.closest('[data-delete-user]');if(!user)return;e.preventDefault();const userId=Number(user.dataset.deleteUser);if(currentUser&&userId===currentUser.id)return notify('Não é possível excluir o próprio usuário.',true);const target=state.users.find(x=>x.id===userId);if(!target)return;if(window.confirm(`Excluir o usuário ${target.email||target.name||'selecionado'}? Essa ação não pode ser desfeita.`)){state.users=state.users.filter(x=>x.id!==userId);addAudit('Usuário excluído: '+(target.email||target.name));if(save()){render();notify('Usuário excluído.')}}});document.addEventListener('click',e=>{const op=e.target.closest('[data-toggle-op]');if(op){e.preventDefault();const key=String(op.dataset.toggleOp);collapsedOperations.has(key)?collapsedOperations.delete(key):collapsedOperations.add(key);render();return}const dash=e.target.closest('[data-toggle-dashboard]');if(dash){e.preventDefault();const key=String(dash.dataset.toggleDashboard);collapsedDashboard.has(key)?collapsedDashboard.delete(key):collapsedDashboard.add(key);render();return}});document.addEventListener('click',e=>{const launch=e.target.closest('[data-launch-hours]');if(launch){e.preventDefault();hoursModal(Number(launch.dataset.op),Number(launch.dataset.launchHours));return}});document.addEventListener('click',e=>{const saveHours=e.target.closest('[data-save-hours]');if(!saveHours)return;e.preventDefault();const op=state.operations.find(x=>x.id===Number(saveHours.dataset.op));const block=op?.blocks.find(x=>x.id===Number(saveHours.dataset.block));const input=document.querySelector(`[data-hours-input=\"${saveHours.dataset.block}\"]`);const monthSelect=document.querySelector(`[data-month-input=\"${saveHours.dataset.block}\"]`);if(!block||!input||!monthSelect)return;const selectedMonth=Number(monthSelect.value);const selectedPeriod=`${state.year}-${String(selectedMonth).padStart(2,'0')}`;block.entries=block.entries||{};block.entries[selectedPeriod]={hours:num(input.value),updatedAt:new Date().toISOString()};stamp(block);stamp(op);addAudit('Horas lançadas');if(!save()){notify('Não foi possível salvar as horas.',true);return}render();notify('Horas salvas em '+months[selectedMonth-1]+' de '+state.year+'.')});
 function period(){return `${state.year}-${String(state.month).padStart(2,'0')}`}
 function blockMonthTotals(block,month,year=state.year){const key=`${year}-${String(month).padStart(2,'0')}`;const h=num(block.entries?.[key]?.hours);return {hours:h,amount:h*num(block.rate)*(state.increase10?1.1:1)}}
